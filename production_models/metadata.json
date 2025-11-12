@@ -1,0 +1,11 @@
+{
+  "high_claim_threshold": 0.0,
+  "training_date": "2025-11-11",
+  "total_training_samples": 96000,
+  "number_of_features": 87,
+  "model_versions": {
+    "regression": "xgb_regressor",
+    "classification": "xgb_classifier",
+    "stratification": null
+  }
+}
