@@ -1,0 +1,388 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import random
+
+# Set random seed for reproducibility
+np.random.seed(42)
+random.seed(42)
+
+# UK PMI Condition Categories with ICD-9 codes
+CONDITION_MAPPING = {
+    'Musculoskeletal': {
+        'codes': ['M54.5', 'M25.5', 'M51.2', 'M17.0', 'M75.1', 'M23.2'],
+        'weight': 0.22,
+        'avg_claim': 3500,
+        'chronic_ratio': 0.15
+    },
+    'Cardiovascular': {
+        'codes': ['I25.1', 'I20.0', 'I48.0', 'I10', 'I50.0'],
+        'weight': 0.12,
+        'avg_claim': 8500,
+        'chronic_ratio': 0.35
+    },
+    'Digestive': {
+        'codes': ['K80.2', 'K35.8', 'K21.0', 'K57.3', 'K40.9'],
+        'weight': 0.10,
+        'avg_claim': 4200,
+        'chronic_ratio': 0.08
+    },
+    'Oncology': {
+        'codes': ['C50.9', 'C61', 'C34.9', 'C18.9', 'C67.9'],
+        'weight': 0.08,
+        'avg_claim': 15000,
+        'chronic_ratio': 0.95
+    },
+    'Respiratory': {
+        'codes': ['J44.0', 'J18.9', 'J45.0', 'J20.9', 'J32.9'],
+        'weight': 0.08,
+        'avg_claim': 3800,
+        'chronic_ratio': 0.25
+    },
+    'Ophthalmology': {
+        'codes': ['H25.9', 'H40.9', 'H35.3', 'H33.0'],
+        'weight': 0.07,
+        'avg_claim': 2500,
+        'chronic_ratio': 0.05
+    },
+    'Gynaecology': {
+        'codes': ['N80.0', 'N92.0', 'N81.1', 'N83.2'],
+        'weight': 0.06,
+        'avg_claim': 3200,
+        'chronic_ratio': 0.10
+    },
+    'Urology': {
+        'codes': ['N20.0', 'N40', 'N39.0', 'N13.3'],
+        'weight': 0.05,
+        'avg_claim': 4500,
+        'chronic_ratio': 0.12
+    },
+    'Neurology': {
+        'codes': ['G43.9', 'G47.0', 'G35', 'G20'],
+        'weight': 0.05,
+        'avg_claim': 5500,
+        'chronic_ratio': 0.40
+    },
+    'Mental Health': {
+        'codes': ['F32.9', 'F41.1', 'F33.2', 'F43.1'],
+        'weight': 0.04,
+        'avg_claim': 2800,
+        'chronic_ratio': 0.30
+    },
+    'Dermatology': {
+        'codes': ['L70.0', 'L40.9', 'L02.9', 'L30.9'],
+        'weight': 0.03,
+        'avg_claim': 1500,
+        'chronic_ratio': 0.08
+    },
+    'ENT': {
+        'codes': ['J35.0', 'H66.9', 'J34.2', 'H81.0'],
+        'weight': 0.03,
+        'avg_claim': 2200,
+        'chronic_ratio': 0.05
+    },
+    'Endocrine': {
+        'codes': ['E11.9', 'E05.0', 'E66.9', 'E78.5'],
+        'weight': 0.02,
+        'avg_claim': 3500,
+        'chronic_ratio': 0.65
+    },
+    'Rheumatology': {
+        'codes': ['M05.9', 'M32.9', 'M06.9', 'M45'],
+        'weight': 0.02,
+        'avg_claim': 4800,
+        'chronic_ratio': 0.80
+    },
+    'Orthopaedics': {
+        'codes': ['S72.0', 'M84.4', 'S82.0', 'M23.5'],
+        'weight': 0.01,
+        'avg_claim': 7500,
+        'chronic_ratio': 0.10
+    },
+    'Haematology': {
+        'codes': ['D50.9', 'D64.9', 'D68.3'],
+        'weight': 0.01,
+        'avg_claim': 4500,
+        'chronic_ratio': 0.45
+    },
+    'Gastroenterology': {
+        'codes': ['K50.9', 'K51.9', 'K29.7'],
+        'weight': 0.005,
+        'avg_claim': 5200,
+        'chronic_ratio': 0.70
+    },
+    'Maternity': {
+        'codes': ['O80', 'O34.2', 'O60.1'],
+        'weight': 0.003,
+        'avg_claim': 4500,
+        'chronic_ratio': 0.00
+    },
+    'Other': {
+        'codes': ['R50.9', 'R07.4', 'R10.4', 'T14.9'],
+        'weight': 0.002,
+        'avg_claim': 2000,
+        'chronic_ratio': 0.05
+    }
+}
+
+# UK PMI Ancillary Service Types
+ANCILLARY_SERVICES = [
+    'Physiotherapy',
+    'Mental Health Therapy',
+    'Diagnostic Imaging',
+    'Pathology Tests',
+    'Radiotherapy',
+    'Chemotherapy',
+    'Home Nursing',
+    'Medical Appliances',
+    'Optical Services'
+]
+
+CLAIM_TYPES = ['Inpatient', 'Outpatient', 'Day Case', 'Cash Benefit']
+PROVIDER_TYPES = ['Hospital', 'Clinic', 'Diagnostic Center', 'Rehab Center']
+TREATMENT_LOCATIONS = ['England', 'Scotland', 'Wales', 'Northern Ireland']
+
+def generate_claim_id(idx):
+    """Generate unique claim ID"""
+    return f"CLM{str(idx).zfill(8)}"
+
+def get_impairment_code(condition_code):
+    """Generate impairment code based on condition"""
+    prefix_map = {
+        'M': 'IMP-MSK',
+        'I': 'IMP-CVD',
+        'K': 'IMP-DIG',
+        'C': 'IMP-ONC',
+        'J': 'IMP-RSP',
+        'H': 'IMP-OPH',
+        'N': 'IMP-URO',
+        'G': 'IMP-NEU',
+        'F': 'IMP-MEN',
+        'L': 'IMP-DER',
+        'E': 'IMP-END',
+        'D': 'IMP-HAE',
+        'S': 'IMP-ORT',
+        'O': 'IMP-MAT',
+        'R': 'IMP-GEN',
+        'T': 'IMP-GEN'
+    }
+    prefix = condition_code[0] if condition_code else 'R'
+    return f"{prefix_map.get(prefix, 'IMP-GEN')}-{random.randint(100, 999)}"
+
+def calculate_claim_amount(condition_category, claim_type, treatment_type):
+    """Calculate realistic claim amount based on type and treatment"""
+    base_amount = CONDITION_MAPPING[condition_category]['avg_claim']
+    
+    # Adjust by claim type
+    type_multiplier = {
+        'Inpatient': 1.8,
+        'Day Case': 0.9,
+        'Outpatient': 0.4,
+        'Cash Benefit': 0.3
+    }
+    
+    # Add variation
+    variation = np.random.normal(1.0, 0.3)
+    variation = max(0.3, min(variation, 2.5))  # Limit extreme values
+    
+    amount = base_amount * type_multiplier.get(claim_type, 1.0) * variation
+    
+    # Add surgical premium
+    if treatment_type == 'Surgical':
+        amount *= random.uniform(1.2, 1.8)
+    
+    return round(amount, 2)
+
+def generate_dates(contract_start, contract_end):
+    """Generate incurred and paid dates within contract period"""
+    if pd.isna(contract_start) or pd.isna(contract_end):
+        return None, None
+    
+    contract_start = pd.to_datetime(contract_start)
+    contract_end = pd.to_datetime(contract_end)
+    
+    if contract_end <= contract_start:
+        return None, None
+    
+    # Generate incurred date
+    days_range = (contract_end - contract_start).days
+    if days_range <= 0:
+        return None, None
+    
+    incurred_date = contract_start + timedelta(days=random.randint(0, days_range))
+    
+    # Paid date is 5-60 days after incurred (realistic processing time)
+    processing_days = random.randint(5, 60)
+    paid_date = incurred_date + timedelta(days=processing_days)
+    
+    # Ensure paid date doesn't exceed contract end
+    if paid_date > contract_end:
+        paid_date = contract_end
+    
+    return incurred_date, paid_date
+
+def is_chronic_condition(condition_category):
+    """Determine if condition is chronic based on probabilities"""
+    chronic_ratio = CONDITION_MAPPING[condition_category]['chronic_ratio']
+    return random.random() < chronic_ratio
+
+def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
+    """Generate claims data for membership table"""
+    
+    claims_data = []
+    claim_counter = 1
+    
+    # Get active members only
+    active_members = membership_df[
+        (membership_df['Status of Member'] == 'Active') |
+        (membership_df['Status of Registration'] == 'Active')
+    ].copy()
+    
+    print(f"Processing {len(active_members)} active members...")
+    
+    # Determine utilization rate (60-70% of members make claims in UK PMI)
+    utilization_rate = 0.65
+    claiming_members = active_members.sample(frac=utilization_rate)
+    
+    for idx, member in claiming_members.iterrows():
+        unique_member_ref = member['Unique Member Reference']
+        unique_id = member['Unique ID']
+        contract_start = member['Contract Start Date']
+        contract_end = member['Contract End Date']
+        gender = member['Gender']
+        year_of_birth = member['Year of Birth']
+        
+        # Calculate age
+        current_year = datetime.now().year
+        age = current_year - year_of_birth if not pd.isna(year_of_birth) else 40
+        
+        # Select condition category based on weights
+        categories = list(CONDITION_MAPPING.keys())
+        weights = [CONDITION_MAPPING[cat]['weight'] for cat in categories]
+        condition_category = random.choices(categories, weights=weights)[0]
+        
+        # Check if chronic condition
+        is_chronic = is_chronic_condition(condition_category)
+        
+        # Determine number of claims
+        if is_chronic:
+            # Chronic conditions: 12 claims per year (monthly management)
+            contract_start_dt = pd.to_datetime(contract_start)
+            contract_end_dt = pd.to_datetime(contract_end)
+            years_active = max(1, (contract_end_dt - contract_start_dt).days / 365)
+            num_claims = int(12 * years_active)
+        else:
+            # Acute conditions: 1-8 claims depending on severity
+            num_claims = random.randint(*claims_per_member_range)
+        
+        # Generate claims for this member
+        for claim_num in range(num_claims):
+            incurred_date, paid_date = generate_dates(contract_start, contract_end)
+            
+            if incurred_date is None or paid_date is None:
+                continue
+            
+            # Select condition code from category
+            condition_code = random.choice(CONDITION_MAPPING[condition_category]['codes'])
+            impairment_code = get_impairment_code(condition_code)
+            
+            # Determine claim type based on condition severity
+            if condition_category in ['Oncology', 'Cardiovascular', 'Neurology']:
+                claim_type = random.choices(
+                    CLAIM_TYPES, 
+                    weights=[0.5, 0.2, 0.2, 0.1]
+                )[0]
+            else:
+                claim_type = random.choices(
+                    CLAIM_TYPES, 
+                    weights=[0.2, 0.4, 0.3, 0.1]
+                )[0]
+            
+            # Treatment type
+            treatment_type = random.choices(
+                ['Surgical', 'Medical', 'Diagnostic', 'Therapeutic'],
+                weights=[0.3, 0.4, 0.2, 0.1]
+            )[0]
+            
+            # Ancillary service (not all claims have ancillary)
+            ancillary_service = random.choice(ANCILLARY_SERVICES) if random.random() < 0.4 else None
+            
+            # Provider and location
+            provider_type = random.choice(PROVIDER_TYPES)
+            treatment_location = random.choices(
+                TREATMENT_LOCATIONS,
+                weights=[0.85, 0.08, 0.05, 0.02]
+            )[0]
+            
+            # Admission and discharge dates (for inpatient/day case)
+            admission_date = incurred_date if claim_type in ['Inpatient', 'Day Case'] else None
+            
+            if claim_type == 'Inpatient':
+                los = random.randint(1, 14)  # Length of stay
+                discharge_date = admission_date + timedelta(days=los)
+            elif claim_type == 'Day Case':
+                discharge_date = admission_date
+                los = 1
+            else:
+                discharge_date = None
+                los = 0
+            
+            # Calculate claim amount
+            claim_amount = calculate_claim_amount(condition_category, claim_type, treatment_type)
+            
+            # Amount paid (typically 80-100% of claim amount based on policy excess/co-pay)
+            payment_ratio = random.uniform(0.8, 1.0)
+            amount_paid = round(claim_amount * payment_ratio, 2)
+            
+            # Create claim record
+            claim_record = {
+                'Claimant Unique ID': unique_id,
+                'Unique Member Reference': unique_member_ref,
+                'Claim ID': generate_claim_id(claim_counter),
+                'Incurred Date': incurred_date.strftime('%Y-%m-%d'),
+                'Paid Date': paid_date.strftime('%Y-%m-%d'),
+                'Condition Code': condition_code,
+                'Impairment Code': impairment_code,
+                'Condition Category': condition_category,
+                'Treatment Type': treatment_type,
+                'Claim Type': claim_type,
+                'Ancillary Service Type': ancillary_service,
+                'Treatment Location': treatment_location,
+                'Provider Type': provider_type,
+                'Admission Date': admission_date.strftime('%Y-%m-%d') if admission_date else None,
+                'Discharge Date': discharge_date.strftime('%Y-%m-%d') if discharge_date else None,
+                'Calculate Length of Service': los,
+                'Claim Amount': claim_amount,
+                'Amount Paid': amount_paid
+            }
+            
+            claims_data.append(claim_record)
+            claim_counter += 1
+        
+        if idx % 1000 == 0:
+            print(f"Processed {idx} members, generated {len(claims_data)} claims...")
+    
+    claims_df = pd.DataFrame(claims_data)
+    
+    # Sort by dates
+    claims_df = claims_df.sort_values(['Claimant Unique ID', 'Incurred Date'])
+    
+    print(f"\nGeneration complete!")
+    print(f"Total claims generated: {len(claims_df)}")
+    print(f"Unique claimants: {claims_df['Claimant Unique ID'].nunique()}")
+    print(f"Average claims per claimant: {len(claims_df) / claims_df['Claimant Unique ID'].nunique():.2f}")
+    print(f"Total claim amount: £{claims_df['Claim Amount'].sum():,.2f}")
+    print(f"Total amount paid: £{claims_df['Amount Paid'].sum():,.2f}")
+    
+    return claims_df
+
+# Usage example:
+# membership_df = pd.read_csv('membership_data.csv')
+# claims_df = generate_claims_data(membership_df)
+# claims_df.to_csv('claims_data.csv', index=False)
+
+print("UK PMI Claims Data Generator Ready!")
+print("\nTo use:")
+print("1. Load your membership data: membership_df = pd.read_csv('your_membership_file.csv')")
+print("2. Generate claims: claims_df = generate_claims_data(membership_df)")
+print("3. Save claims: claims_df.to_csv('claims_output.csv', index=False)")
