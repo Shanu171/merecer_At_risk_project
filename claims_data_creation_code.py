@@ -198,8 +198,11 @@ def generate_dates(contract_start, contract_end):
     if pd.isna(contract_start) or pd.isna(contract_end):
         return None, None
     
-    contract_start = pd.to_datetime(contract_start)
-    contract_end = pd.to_datetime(contract_end)
+    try:
+        contract_start = pd.to_datetime(contract_start, dayfirst=True)
+        contract_end = pd.to_datetime(contract_end, dayfirst=True)
+    except:
+        return None, None
     
     if contract_end <= contract_start:
         return None, None
@@ -232,21 +235,47 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
     claims_data = []
     claim_counter = 1
     
-    # Get active members only
+    print(f"Total members in file: {len(membership_df)}")
+    print(f"Available columns: {membership_df.columns.tolist()}\n")
+    
+    # Get active members - based on your data, Registration Status contains "Active"
+    # Filter for active members with valid dates
     active_members = membership_df[
-        (membership_df['Status of Member'] == 'Active') |
-        (membership_df['Status of Registration'] == 'Active')
+        (membership_df['Registration Status'].str.strip() == 'Active')
     ].copy()
     
-    print(f"Processing {len(active_members)} active members...")
+    print(f"Active members found: {len(active_members)}")
+    
+    if len(active_members) == 0:
+        print("ERROR: No active members found!")
+        print("Please check 'Registration Status' column values")
+        return pd.DataFrame()
+    
+    # Further filter for members with valid contract dates
+    active_members['Contract Start Date'] = pd.to_datetime(active_members['Contract Start Date'], dayfirst=True, errors='coerce')
+    active_members['Contract End Date'] = pd.to_datetime(active_members['Contract End Date'], dayfirst=True, errors='coerce')
+    
+    valid_members = active_members[
+        (active_members['Contract Start Date'].notna()) & 
+        (active_members['Contract End Date'].notna()) &
+        (active_members['Contract End Date'] > active_members['Contract Start Date'])
+    ].copy()
+    
+    print(f"Members with valid contract dates: {len(valid_members)}")
+    
+    if len(valid_members) == 0:
+        print("ERROR: No members with valid contract dates!")
+        return pd.DataFrame()
     
     # Determine utilization rate (60-70% of members make claims in UK PMI)
     utilization_rate = 0.65
-    claiming_members = active_members.sample(frac=utilization_rate)
+    claiming_members = valid_members.sample(frac=utilization_rate, random_state=42)
+    
+    print(f"Members selected for claims (65% utilization): {len(claiming_members)}\n")
     
     for idx, member in claiming_members.iterrows():
-        unique_member_ref = member['Unique Member Reference']
-        unique_id = member['Unique ID']
+        unique_member_ref = str(member['Unique Member Reference'])
+        unique_id = str(member['Unique ID'])
         contract_start = member['Contract Start Date']
         contract_end = member['Contract End Date']
         gender = member['Gender']
@@ -267,9 +296,7 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
         # Determine number of claims
         if is_chronic:
             # Chronic conditions: 12 claims per year (monthly management)
-            contract_start_dt = pd.to_datetime(contract_start)
-            contract_end_dt = pd.to_datetime(contract_end)
-            years_active = max(1, (contract_end_dt - contract_start_dt).days / 365)
+            years_active = max(1, (contract_end - contract_start).days / 365)
             num_claims = int(12 * years_active)
         else:
             # Acute conditions: 1-8 claims depending on severity
@@ -339,8 +366,8 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
                 'Claimant Unique ID': unique_id,
                 'Unique Member Reference': unique_member_ref,
                 'Claim ID': generate_claim_id(claim_counter),
-                'Incurred Date': incurred_date.strftime('%Y-%m-%d'),
-                'Paid Date': paid_date.strftime('%Y-%m-%d'),
+                'Incurred Date': incurred_date.strftime('%d/%m/%Y'),
+                'Paid Date': paid_date.strftime('%d/%m/%Y'),
                 'Condition Code': condition_code,
                 'Impairment Code': impairment_code,
                 'Condition Category': condition_category,
@@ -349,8 +376,8 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
                 'Ancillary Service Type': ancillary_service,
                 'Treatment Location': treatment_location,
                 'Provider Type': provider_type,
-                'Admission Date': admission_date.strftime('%Y-%m-%d') if admission_date else None,
-                'Discharge Date': discharge_date.strftime('%Y-%m-%d') if discharge_date else None,
+                'Admission Date': admission_date.strftime('%d/%m/%Y') if admission_date else None,
+                'Discharge Date': discharge_date.strftime('%d/%m/%Y') if discharge_date else None,
                 'Calculate Length of Service': los,
                 'Claim Amount': claim_amount,
                 'Amount Paid': amount_paid
@@ -359,30 +386,33 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
             claims_data.append(claim_record)
             claim_counter += 1
         
-        if idx % 1000 == 0:
-            print(f"Processed {idx} members, generated {len(claims_data)} claims...")
+        if (idx - claiming_members.index[0]) % 5000 == 0 and idx != claiming_members.index[0]:
+            print(f"Processed {idx - claiming_members.index[0]} members, generated {len(claims_data)} claims...")
     
     claims_df = pd.DataFrame(claims_data)
     
-    # Sort by dates
-    claims_df = claims_df.sort_values(['Claimant Unique ID', 'Incurred Date'])
+    if len(claims_df) == 0:
+        print("\nERROR: No claims were generated!")
+        return pd.DataFrame()
     
-    print(f"\nGeneration complete!")
-    print(f"Total claims generated: {len(claims_df)}")
-    print(f"Unique claimants: {claims_df['Claimant Unique ID'].nunique()}")
+    # Sort by dates
+    claims_df['Incurred Date Temp'] = pd.to_datetime(claims_df['Incurred Date'], dayfirst=True)
+    claims_df = claims_df.sort_values(['Claimant Unique ID', 'Incurred Date Temp'])
+    claims_df = claims_df.drop('Incurred Date Temp', axis=1)
+    
+    print(f"\n{'='*60}")
+    print(f"GENERATION COMPLETE!")
+    print(f"{'='*60}")
+    print(f"Total claims generated: {len(claims_df):,}")
+    print(f"Unique claimants: {claims_df['Claimant Unique ID'].nunique():,}")
+    print(f"Unique members: {claims_df['Unique Member Reference'].nunique():,}")
     print(f"Average claims per claimant: {len(claims_df) / claims_df['Claimant Unique ID'].nunique():.2f}")
     print(f"Total claim amount: £{claims_df['Claim Amount'].sum():,.2f}")
     print(f"Total amount paid: £{claims_df['Amount Paid'].sum():,.2f}")
+    print(f"\nClaim Type Distribution:")
+    print(claims_df['Claim Type'].value_counts())
+    print(f"\nTop 5 Condition Categories:")
+    print(claims_df['Condition Category'].value_counts().head())
     
     return claims_df
 
-# Usage example:
-# membership_df = pd.read_csv('membership_data.csv')
-# claims_df = generate_claims_data(membership_df)
-# claims_df.to_csv('claims_data.csv', index=False)
-
-print("UK PMI Claims Data Generator Ready!")
-print("\nTo use:")
-print("1. Load your membership data: membership_df = pd.read_csv('your_membership_file.csv')")
-print("2. Generate claims: claims_df = generate_claims_data(membership_df)")
-print("3. Save claims: claims_df.to_csv('claims_output.csv', index=False)")
