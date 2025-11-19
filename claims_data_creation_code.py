@@ -169,8 +169,8 @@ def get_impairment_code(condition_code):
     prefix = condition_code[0] if condition_code else 'R'
     return f"{prefix_map.get(prefix, 'IMP-GEN')}-{random.randint(100, 999)}"
 
-def calculate_claim_amount(condition_category, claim_type, treatment_type):
-    """Calculate realistic claim amount based on type and treatment"""
+def calculate_claim_amount(condition_category, claim_type, treatment_type, age):
+    """Calculate realistic claim amount based on type, treatment, and age"""
     base_amount = CONDITION_MAPPING[condition_category]['avg_claim']
     
     # Adjust by claim type
@@ -185,7 +185,10 @@ def calculate_claim_amount(condition_category, claim_type, treatment_type):
     variation = np.random.normal(1.0, 0.3)
     variation = max(0.3, min(variation, 2.5))  # Limit extreme values
     
-    amount = base_amount * type_multiplier.get(claim_type, 1.0) * variation
+    # Apply age multiplier
+    age_multiplier = get_age_amount_multiplier(age)
+    
+    amount = base_amount * type_multiplier.get(claim_type, 1.0) * variation * age_multiplier
     
     # Add surgical premium
     if treatment_type == 'Surgical':
@@ -224,7 +227,96 @@ def generate_dates(contract_start, contract_end):
     
     return incurred_date, paid_date
 
-def is_chronic_condition(condition_category):
+def get_age_multiplier(age):
+    """Calculate claim frequency multiplier based on age"""
+    if age < 18:
+        return 0.3  # Children: fewer claims
+    elif age < 30:
+        return 0.5  # Young adults: low claims
+    elif age < 40:
+        return 0.7  # 30s: moderate claims
+    elif age < 50:
+        return 1.0  # 40s: baseline
+    elif age < 60:
+        return 1.4  # 50s: increased claims
+    elif age < 70:
+        return 1.8  # 60s: higher claims
+    else:
+        return 2.2  # 70+: highest claims
+
+def get_age_amount_multiplier(age):
+    """Calculate claim amount multiplier based on age"""
+    if age < 18:
+        return 0.7  # Children: lower costs
+    elif age < 30:
+        return 0.8  # Young adults: lower costs
+    elif age < 40:
+        return 1.0  # 30s: baseline
+    elif age < 50:
+        return 1.1  # 40s: slightly higher
+    elif age < 60:
+        return 1.3  # 50s: higher costs
+    elif age < 70:
+        return 1.5  # 60s: much higher costs
+    else:
+        return 1.8  # 70+: highest costs
+
+def get_age_based_conditions(age):
+    """Adjust condition probabilities based on age"""
+    if age < 18:
+        # Children: more respiratory, ENT, less cardiovascular/oncology
+        return {
+            'Respiratory': 0.25,
+            'ENT': 0.15,
+            'Digestive': 0.12,
+            'Musculoskeletal': 0.10,
+            'Dermatology': 0.08,
+            'Ophthalmology': 0.05,
+            'Mental Health': 0.03,
+            'Other': 0.22
+        }
+    elif age < 40:
+        # Young adults: musculoskeletal, mental health, gynaecology
+        return {
+            'Musculoskeletal': 0.25,
+            'Mental Health': 0.12,
+            'Gynaecology': 0.10,
+            'Digestive': 0.10,
+            'Respiratory': 0.08,
+            'Dermatology': 0.05,
+            'ENT': 0.05,
+            'Urology': 0.03,
+            'Other': 0.22
+        }
+    elif age < 60:
+        # Middle age: standard distribution with some cardiovascular
+        return {
+            'Musculoskeletal': 0.22,
+            'Cardiovascular': 0.10,
+            'Digestive': 0.10,
+            'Gynaecology': 0.08,
+            'Urology': 0.06,
+            'Respiratory': 0.08,
+            'Mental Health': 0.05,
+            'Ophthalmology': 0.08,
+            'Endocrine': 0.03,
+            'Other': 0.20
+        }
+    else:
+        # Older adults: cardiovascular, oncology, orthopaedics dominant
+        return {
+            'Cardiovascular': 0.20,
+            'Oncology': 0.15,
+            'Musculoskeletal': 0.15,
+            'Ophthalmology': 0.10,
+            'Orthopaedics': 0.08,
+            'Respiratory': 0.08,
+            'Urology': 0.07,
+            'Endocrine': 0.05,
+            'Neurology': 0.05,
+            'Rheumatology': 0.04,
+            'Other': 0.03
+        }
     """Determine if condition is chronic based on probabilities"""
     chronic_ratio = CONDITION_MAPPING[condition_category]['chronic_ratio']
     return random.random() < chronic_ratio
@@ -285,22 +377,37 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
         current_year = datetime.now().year
         age = current_year - year_of_birth if not pd.isna(year_of_birth) else 40
         
-        # Select condition category based on weights
-        categories = list(CONDITION_MAPPING.keys())
-        weights = [CONDITION_MAPPING[cat]['weight'] for cat in categories]
+        # Get age-based condition probabilities
+        age_condition_weights = get_age_based_conditions(age)
+        
+        # Select condition category based on age-adjusted weights
+        categories = list(age_condition_weights.keys())
+        weights = list(age_condition_weights.values())
+        
+        # Fill in missing categories with small weight
+        all_categories = list(CONDITION_MAPPING.keys())
+        for cat in all_categories:
+            if cat not in categories:
+                categories.append(cat)
+                weights.append(0.001)
+        
         condition_category = random.choices(categories, weights=weights)[0]
         
         # Check if chronic condition
         is_chronic = is_chronic_condition(condition_category)
         
-        # Determine number of claims
+        # Calculate age multiplier for claim frequency
+        age_multiplier = get_age_multiplier(age)
+        
+        # Determine number of claims (adjusted by age)
         if is_chronic:
             # Chronic conditions: 12 claims per year (monthly management)
             years_active = max(1, (contract_end - contract_start).days / 365)
-            num_claims = int(12 * years_active)
+            num_claims = int(12 * years_active * age_multiplier)
         else:
-            # Acute conditions: 1-8 claims depending on severity
-            num_claims = random.randint(*claims_per_member_range)
+            # Acute conditions: 1-8 claims depending on severity and age
+            base_claims = random.randint(*claims_per_member_range)
+            num_claims = max(1, int(base_claims * age_multiplier))
         
         # Track claims for this member to avoid overlaps
         member_claims = []
@@ -445,8 +552,8 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
             }
             member_claims.append(claim_info)
             
-            # Calculate claim amount
-            claim_amount = calculate_claim_amount(condition_category, claim_type, treatment_type)
+            # Calculate claim amount (with age factor)
+            claim_amount = calculate_claim_amount(condition_category, claim_type, treatment_type, age)
             
             # Amount paid (typically 80-100% of claim amount based on policy excess/co-pay)
             payment_ratio = random.uniform(0.8, 1.0)
