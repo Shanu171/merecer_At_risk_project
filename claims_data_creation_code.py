@@ -325,17 +325,61 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
                     weights=[0.2, 0.4, 0.3, 0.1]
                 )[0]
             
-            # Treatment type
-            treatment_type = random.choices(
-                ['Surgical', 'Medical', 'Diagnostic', 'Therapeutic'],
-                weights=[0.3, 0.4, 0.2, 0.1]
-            )[0]
+            # Treatment type based on condition category
+            if condition_category in ['Oncology', 'Cardiovascular', 'Orthopaedics', 'Urology', 'Gynaecology']:
+                treatment_type = random.choices(
+                    ['Surgical', 'Medical', 'Diagnostic', 'Therapeutic'],
+                    weights=[0.5, 0.3, 0.15, 0.05]
+                )[0]
+            elif condition_category in ['Mental Health']:
+                treatment_type = 'Therapeutic'
+            elif condition_category in ['Ophthalmology', 'Dermatology', 'ENT']:
+                treatment_type = random.choices(
+                    ['Surgical', 'Medical', 'Diagnostic', 'Therapeutic'],
+                    weights=[0.4, 0.25, 0.25, 0.1]
+                )[0]
+            else:
+                treatment_type = random.choices(
+                    ['Surgical', 'Medical', 'Diagnostic', 'Therapeutic'],
+                    weights=[0.3, 0.4, 0.2, 0.1]
+                )[0]
             
-            # Ancillary service (not all claims have ancillary)
-            ancillary_service = random.choice(ANCILLARY_SERVICES) if random.random() < 0.4 else None
+            # Ancillary service based on condition category and treatment type
+            ancillary_service = None
+            if random.random() < 0.4:  # 40% of claims have ancillary services
+                if condition_category == 'Musculoskeletal':
+                    ancillary_service = 'Physiotherapy'
+                elif condition_category == 'Mental Health':
+                    ancillary_service = 'Mental Health Therapy'
+                elif condition_category in ['Oncology', 'Haematology']:
+                    ancillary_service = random.choice(['Radiotherapy', 'Chemotherapy', 'Home Nursing'])
+                elif condition_category == 'Ophthalmology':
+                    ancillary_service = 'Optical Services'
+                elif treatment_type == 'Diagnostic':
+                    ancillary_service = random.choice(['Diagnostic Imaging', 'Pathology Tests'])
+                elif treatment_type == 'Therapeutic':
+                    ancillary_service = random.choice(['Physiotherapy', 'Home Nursing'])
+                else:
+                    ancillary_service = random.choice(['Diagnostic Imaging', 'Pathology Tests', 'Medical Appliances'])
             
-            # Provider and location
-            provider_type = random.choice(PROVIDER_TYPES)
+            # Provider type based on claim type and treatment type
+            if claim_type == 'Inpatient' or (treatment_type == 'Surgical' and claim_type != 'Outpatient'):
+                provider_type = 'Hospital'
+            elif treatment_type == 'Diagnostic':
+                provider_type = random.choice(['Diagnostic Center', 'Clinic', 'Hospital'])
+            elif condition_category == 'Mental Health':
+                provider_type = random.choice(['Clinic', 'Hospital'])
+            elif claim_type == 'Day Case':
+                provider_type = random.choice(['Hospital', 'Clinic'])
+            elif treatment_type == 'Therapeutic':
+                provider_type = random.choice(['Rehab Center', 'Clinic'])
+            else:
+                provider_type = random.choices(
+                    PROVIDER_TYPES,
+                    weights=[0.4, 0.35, 0.15, 0.1]
+                )[0]
+            
+            # Treatment location
             treatment_location = random.choices(
                 TREATMENT_LOCATIONS,
                 weights=[0.85, 0.08, 0.05, 0.02]
@@ -416,3 +460,12 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
     
     return claims_df
 
+# Usage example:
+print("="*60)
+print("UK PMI CLAIMS DATA GENERATOR")
+print("="*60)
+print("\nTo use:")
+print("1. membership_df = pd.read_csv('uk_pmi_membership_120k.csv')")
+print("2. claims_df = generate_claims_data(membership_df)")
+print("3. claims_df.to_csv('claims_data.csv', index=False)")
+print("="*60)
