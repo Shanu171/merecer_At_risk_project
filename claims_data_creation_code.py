@@ -302,10 +302,45 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
             # Acute conditions: 1-8 claims depending on severity
             num_claims = random.randint(*claims_per_member_range)
         
+        # Track claims for this member to avoid overlaps
+        member_claims = []
+        
         # Generate claims for this member
         for claim_num in range(num_claims):
-            incurred_date, paid_date = generate_dates(contract_start, contract_end)
+            # Try to find a non-overlapping date (max 10 attempts)
+            incurred_date = None
+            paid_date = None
             
+            for attempt in range(10):
+                temp_incurred, temp_paid = generate_dates(contract_start, contract_end)
+                
+                if temp_incurred is None or temp_paid is None:
+                    continue
+                
+                # Check for overlaps with existing claims
+                has_overlap = False
+                for existing_claim in member_claims:
+                    existing_incurred = existing_claim['incurred']
+                    existing_discharge = existing_claim.get('discharge', existing_claim['incurred'])
+                    
+                    # Check if new claim overlaps with existing claim period
+                    if existing_incurred <= temp_incurred <= existing_discharge:
+                        has_overlap = True
+                        break
+                    if existing_incurred <= temp_paid <= existing_discharge:
+                        has_overlap = True
+                        break
+                    # Check reverse overlap
+                    if temp_incurred <= existing_incurred <= temp_paid:
+                        has_overlap = True
+                        break
+                
+                if not has_overlap:
+                    incurred_date = temp_incurred
+                    paid_date = temp_paid
+                    break
+            
+            # Skip if couldn't find non-overlapping date
             if incurred_date is None or paid_date is None:
                 continue
             
@@ -391,12 +426,24 @@ def generate_claims_data(membership_df, claims_per_member_range=(1, 8)):
             if claim_type == 'Inpatient':
                 los = random.randint(1, 14)  # Length of stay
                 discharge_date = admission_date + timedelta(days=los)
+                # Ensure discharge doesn't exceed contract end
+                if discharge_date > contract_end:
+                    discharge_date = contract_end
+                    los = (discharge_date - admission_date).days
             elif claim_type == 'Day Case':
                 discharge_date = admission_date
                 los = 1
             else:
                 discharge_date = None
                 los = 0
+            
+            # Store claim info to check for future overlaps
+            claim_info = {
+                'incurred': incurred_date,
+                'paid': paid_date,
+                'discharge': discharge_date if discharge_date else incurred_date
+            }
+            member_claims.append(claim_info)
             
             # Calculate claim amount
             claim_amount = calculate_claim_amount(condition_category, claim_type, treatment_type)
